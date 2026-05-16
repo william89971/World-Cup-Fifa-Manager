@@ -1,0 +1,21 @@
+# Codex Futbol TODO
+
+- Add browser smoke tests for home, country selection, match preview, playable match launch, match result, and champion flow.
+- Test PWA install prompts on deployed iOS Safari and Android Chrome.
+- Add true in-match mobile menu instead of using pause as the Menu button behavior.
+- Improve physical player-to-ball contact and player collision avoidance.
+- Profile and optimize 22-player matches on older phones.
+- Playtest and tune AI brain score weights so roles feel distinct without making players ignore obvious danger.
+- Playtest stronger driven passes and tune receiving/first-touch behavior so firm passes remain controllable.
+- Add goal backstop colliders and richer goal-mouth rebound behavior beyond the current keeper blockers.
+- Add clearer visible role-zone guides during live play; F3 currently reports selected-player zone text.
+- Tune smart player switching, call-for-pass behavior, AI reaction timing, and 11v11 camera distance through playtesting.
+- Tune tackle success, loose-ball reclaim delay, keeper clear power, and larger-field AI spacing through playtesting.
+- Add better goalkeeper dive/reaction behavior; current keepers track and block with simple kinematic bodies.
+- Improve restart placement and give restart possession to the correct nearby player more consistently.
+- Add fouls, cards, substitutions, bench roles, and fatigue over a full tournament.
+- Add richer off-ball player indicators beyond the current minimap, pass hint, controlled marker, possessor marker, and optional F3 AI labels.
+- Improve knockout draw handling for user matches with playable penalties or extra time.
+- Make bracket layout more compact on phone-sized screens.
+- Add procedural audio or optional generated sound assets.
+- Continue reducing the large Rapier production chunk.
