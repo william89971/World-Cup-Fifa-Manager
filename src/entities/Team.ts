@@ -10,6 +10,8 @@ export interface Team {
   name: string;
   tournamentTeam?: TournamentTeam;
   players: Player[];
+  /** Bench players (alive Player rigs positioned off-pitch). */
+  bench: Player[];
   formation: FormationName;
   teamStyle: TeamStyle;
   attackingDirection: Vector3;
@@ -24,6 +26,8 @@ export interface CreateTeamOptions {
   // (goalkeeper → leftBack → ... → striker). Missing roles fall back to the
   // tournamentTeam.players[index] default.
   lineupOverride?: TournamentPlayerProfile[];
+  /** Bench profiles to instantiate as off-pitch Player rigs. */
+  bench?: TournamentPlayerProfile[];
 }
 
 export function createTeam(
@@ -66,11 +70,32 @@ export function createTeam(
     );
   });
 
+  // Bench: instantiate as Player rigs but position far off-pitch so they don't
+  // interact with physics/AI until subbed in.
+  const benchProfiles = options.bench ?? tournamentTeam?.bench ?? [];
+  const bench = benchProfiles.map((profile, index) => {
+    const offPitch = new Vector3(-1000, 0, color === 'blue' ? -10 - index * 1.2 : 10 + index * 1.2);
+    return new Player(
+      color,
+      offPitch,
+      `${color}-bench-${index + 1}`,
+      profile.role as PlayerRole,
+      profile.number ?? 12 + index,
+      tournamentTeam?.colors.primary,
+      tournamentTeam?.colors.accent,
+      profile.name,
+      profile.styleSeed,
+      profile.personality,
+      profile.traits,
+    );
+  });
+
   return {
     color,
     name: tournamentTeam?.name ?? (color === 'blue' ? 'Blue' : 'Red'),
     tournamentTeam,
     players,
+    bench,
     formation: activeFormation,
     teamStyle: activeStyle,
     attackingDirection: color === 'blue' ? new Vector3(0, 0, -1) : new Vector3(0, 0, 1),

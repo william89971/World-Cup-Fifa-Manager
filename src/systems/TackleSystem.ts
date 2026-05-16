@@ -13,6 +13,8 @@ import {
 } from '../game/constants';
 import { soundHooks } from '../game/soundHooks';
 import { PossessionSystem } from './PossessionSystem';
+import type { MatchEventBus } from './MatchEventBus';
+import type { MatchEvent } from '../manager/types';
 
 export interface TackleDebugState {
   lastResult: string;
@@ -26,7 +28,10 @@ export class TackleSystem {
   private readonly tackleDirection = new Vector3();
   private readonly cooldowns = new Map<string, number>();
   private readonly previousPositions = new Map<string, Vector3>();
+  private readonly yellows = new Map<string, number>();
   private lastResult = 'none';
+  private bus?: MatchEventBus;
+  private getCurrentMinute?: () => number;
 
   constructor(
     private readonly input: GameInput,
@@ -34,6 +39,25 @@ export class TackleSystem {
     private readonly possession: PossessionSystem,
     private readonly getControlledPlayer: () => Player,
   ) {}
+
+  attachEventBus(bus: MatchEventBus, getCurrentMinute: () => number): void {
+    this.bus = bus;
+    this.getCurrentMinute = getCurrentMinute;
+  }
+
+  private emit(event: MatchEvent): void {
+    if (this.bus) this.bus.emit(event);
+  }
+
+  private getYellowCount(playerId: string): number {
+    return this.yellows.get(playerId) ?? 0;
+  }
+
+  private addYellow(playerId: string): number {
+    const next = this.getYellowCount(playerId) + 1;
+    this.yellows.set(playerId, next);
+    return next;
+  }
 
   update(teams: Team[], delta: number): void {
     this.tickCooldowns(delta);
@@ -206,6 +230,23 @@ export class TackleSystem {
 
     if (!success) {
       this.lastResult = `${tackler.displayName} missed (${Math.round(chance * 100)}%)`;
+      const foulRisk = Math.max(
+        0,
+        tackler.traits.aggression - tackler.traits.discipline,
+      );
+      // Aggressive but reckless tackles can turn a miss into a foul (and rarely a yellow).
+      if (this.bus && Math.random() < 0.18 + foulRisk * 0.25) {
+        const minute = this.getCurrentMinute?.() ?? 0;
+        this.emit({ minute, type: 'foul', team: tacklerTeam.color, playerId: tackler.id, detail: `${tackler.displayName} mistimed it` });
+        if (Math.random() < 0.18 + foulRisk * 0.18) {
+          const yellows = this.addYellow(tackler.id);
+          if (yellows >= 2) {
+            this.emit({ minute, type: 'card', cardType: 'red', team: tacklerTeam.color, playerId: tackler.id, detail: `Second yellow for ${tackler.displayName}` });
+          } else {
+            this.emit({ minute, type: 'card', cardType: 'yellow', team: tacklerTeam.color, playerId: tackler.id, detail: `Yellow for ${tackler.displayName}` });
+          }
+        }
+      }
       return;
     }
 

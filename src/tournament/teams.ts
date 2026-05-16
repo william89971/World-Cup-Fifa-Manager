@@ -11,6 +11,7 @@ import {
   type TeamStyle,
   type TopTrait,
 } from '../game/playerTypes';
+import { createBenchPlayers } from './benchGen';
 
 export interface TeamRating {
   attack: number;
@@ -34,6 +35,20 @@ export interface TournamentPlayerProfile {
   traits: PlayerTraits;
   topTraits: TopTrait[];
   styleSeed: number;
+  /** Manager-mode condition 0..100, default 100. */
+  condition?: number;
+  /** Manager-mode morale 0..100, default 70. */
+  morale?: number;
+  /** Manager-mode form -5..+5, default 0. */
+  form?: number;
+  /** Manager-mode last-5 match ratings (0..10). */
+  recentRatings?: number[];
+  /** Manager-mode captain flag. */
+  isCaptain?: boolean;
+  /** Manager-mode notes (string). */
+  notes?: string;
+  /** Days remaining on the injury (manager-mode). */
+  injuredDays?: number;
 }
 
 export interface TournamentTeam {
@@ -45,7 +60,10 @@ export interface TournamentTeam {
   teamStyle: TeamStyle;
   formationPreferences: FormationName[];
   flagSvg: string;
+  /** The 11 starters (canonical role order). */
   players: TournamentPlayerProfile[];
+  /** The 7 bench players, generated programmatically. */
+  bench: TournamentPlayerProfile[];
 }
 
 export interface TournamentTeamProfileSave {
@@ -53,6 +71,7 @@ export interface TournamentTeamProfileSave {
   teamStyle: TeamStyle;
   formationPreferences: FormationName[];
   players: TournamentPlayerProfile[];
+  bench: TournamentPlayerProfile[];
 }
 
 interface TeamRow {
@@ -705,8 +724,13 @@ const TEAM_ROWS: TeamRow[] = [
 export const TOURNAMENT_TEAMS: TournamentTeam[] = TEAM_ROWS.map((team, index) => {
   const rating = ratingFor(index);
   const teamStyle = styleForTeam(index, rating);
+  const id = slug(team.name);
+  const players = createTournamentRoster(team.players, team.name, teamStyle, rating).map((p) =>
+    ensureManagerDefaults(p),
+  );
+  const bench = createBenchPlayers(team.name, id, players);
   return {
-    id: slug(team.name),
+    id,
     name: team.name,
     code: team.code,
     colors: team.colors,
@@ -714,7 +738,8 @@ export const TOURNAMENT_TEAMS: TournamentTeam[] = TEAM_ROWS.map((team, index) =>
     rating,
     teamStyle,
     formationPreferences: formationPreferencesForStyle(teamStyle),
-    players: createTournamentRoster(team.players, team.name, teamStyle, rating),
+    players,
+    bench,
   };
 });
 
@@ -724,7 +749,24 @@ export function createTournamentTeamProfilesSave(): TournamentTeamProfileSave[] 
     teamStyle: team.teamStyle,
     formationPreferences: team.formationPreferences,
     players: team.players,
+    bench: team.bench,
   }));
+}
+
+/** Apply manager-mode defaults (condition/morale/form) to a profile. */
+export function ensureManagerDefaults(profile: TournamentPlayerProfile): TournamentPlayerProfile {
+  return {
+    ...profile,
+    condition: profile.condition ?? 100,
+    morale: profile.morale ?? 70,
+    form: profile.form ?? 0,
+    recentRatings: profile.recentRatings ?? [],
+  };
+}
+
+/** Unique-per-tournament player id, used as map keys for ratings and ownership. */
+export function playerProfileId(teamId: string, profile: TournamentPlayerProfile): string {
+  return `${teamId}:${profile.role}:${profile.number}`;
 }
 
 export function getTeamById(teamId: string): TournamentTeam {

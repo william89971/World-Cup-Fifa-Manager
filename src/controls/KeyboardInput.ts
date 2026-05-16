@@ -77,6 +77,27 @@ export class KeyboardInput implements GameInput {
     return this.wasPressed('F3');
   }
 
+  // Manager-mode keys for the match viewer.
+  wasManagerPausePressed(): boolean {
+    return this.wasPressed('Space');
+  }
+
+  wasManagerSpeed1Pressed(): boolean {
+    return this.wasPressed('Digit1') || this.wasPressed('Numpad1');
+  }
+
+  wasManagerSpeed2Pressed(): boolean {
+    return this.wasPressed('Digit2') || this.wasPressed('Numpad2');
+  }
+
+  wasManagerSpeed4Pressed(): boolean {
+    return this.wasPressed('Digit4') || this.wasPressed('Numpad4');
+  }
+
+  wasManagerEscapePressed(): boolean {
+    return this.wasPressed('Escape');
+  }
+
   endFrame(): void {
     this.pressedThisFrame.clear();
     this.releasedThisFrame.clear();

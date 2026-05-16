@@ -5,6 +5,8 @@ import type { Team } from '../entities/Team';
 import { BALL, GOAL, MATCH, PENALTY_AREA_SIZE, PITCH, RESTARTS } from '../game/constants';
 import { soundHooks } from '../game/soundHooks';
 import { clampPositionToRoleZone } from './RoleZones';
+import type { MatchEvent } from '../manager/types';
+import type { MatchEventBus } from './MatchEventBus';
 
 export interface MatchScore {
   blue: number;
@@ -40,6 +42,12 @@ export class MatchSystem {
   private message = 'Kickoff';
   private paused = false;
   private finished = false;
+  // Match-speed multiplier applied to clock + AI delta (1x, 2x, 4x).
+  private speedMultiplier: 1 | 2 | 4 = 1;
+  // Halftime fires once when elapsedSeconds crosses durationSeconds/2.
+  private halftimeFired = false;
+  // Optional MatchEventBus for emitting goal/corner/offside/sub/etc. for stats + commentary.
+  private bus?: MatchEventBus;
 
   constructor(
     private readonly ball: Ball,
@@ -52,6 +60,28 @@ export class MatchSystem {
     private readonly getLastTouchTeam: () => 'blue' | 'red' | undefined = () => undefined,
   ) {
     this.resetKickoff();
+  }
+
+  attachEventBus(bus: MatchEventBus): void {
+    this.bus = bus;
+    this.emit({ minute: 0, type: 'kickoff', team: 'neutral' });
+  }
+
+  getCurrentMinute(): number {
+    // Map elapsed seconds onto a 0..90 match minute scale for readability.
+    return Math.min(90, Math.max(0, Math.round((this.elapsedSeconds / this.durationSeconds) * 90)));
+  }
+
+  setSpeed(multiplier: 1 | 2 | 4): void {
+    this.speedMultiplier = multiplier;
+  }
+
+  getSpeed(): 1 | 2 | 4 {
+    return this.speedMultiplier;
+  }
+
+  private emit(event: MatchEvent): void {
+    if (this.bus) this.bus.emit(event);
   }
 
   get isResetting(): boolean {
@@ -90,26 +120,36 @@ export class MatchSystem {
       return;
     }
 
+    // Apply speed multiplier to the match clock and timers (not physics).
+    const scaledDelta = delta * this.speedMultiplier;
+
     if (this.goalFreezeCooldown > 0) {
-      this.goalFreezeCooldown = Math.max(0, this.goalFreezeCooldown - delta);
+      this.goalFreezeCooldown = Math.max(0, this.goalFreezeCooldown - scaledDelta);
       if (this.goalFreezeCooldown === 0 && this.pendingKickoffReset) {
         this.resetKickoff();
         this.resetCooldown = MATCH.goalCountdownSeconds;
         this.message = 'Kickoff';
         this.pendingKickoffReset = false;
+        this.emit({ minute: this.getCurrentMinute(), type: 'kickoff', team: 'neutral' });
       }
       return;
     }
 
     if (this.resetCooldown > 0) {
-      this.resetCooldown = Math.max(0, this.resetCooldown - delta);
+      this.resetCooldown = Math.max(0, this.resetCooldown - scaledDelta);
       if (this.resetCooldown === 0) {
         this.message = '';
       }
       return;
     }
 
-    this.elapsedSeconds += delta;
+    this.elapsedSeconds += scaledDelta;
+
+    // Halftime trigger (fires once at 50% elapsed).
+    if (!this.halftimeFired && this.elapsedSeconds >= this.durationSeconds / 2) {
+      this.halftimeFired = true;
+      this.emit({ minute: 45, type: 'half', team: 'neutral' });
+    }
 
     if (this.isBallOutOfBounds()) {
       this.restartFromOutOfBounds();
@@ -164,6 +204,13 @@ export class MatchSystem {
     );
     this.onKickoffReset();
     soundHooks.onWhistle();
+    // The team that benefits from the restart is the restartTeamColor; the offside
+    // was committed by the OTHER team.
+    this.emit({
+      minute: this.getCurrentMinute(),
+      type: 'offside',
+      team: restartTeamColor === 'blue' ? 'red' : 'blue',
+    });
   }
 
   private registerGoal(team: 'blue' | 'red'): void {
@@ -174,6 +221,12 @@ export class MatchSystem {
     this.pendingKickoffReset = true;
     this.ball.stop();
     soundHooks.onGoal();
+    this.emit({
+      minute: this.getCurrentMinute(),
+      type: 'goal',
+      team,
+      detail: `${this.score.blue}-${this.score.red}`,
+    });
   }
 
   private resetKickoff(): void {
@@ -236,6 +289,11 @@ export class MatchSystem {
       this.resetCooldown = RESTARTS.cornerDelay;
       this.ball.reset(restart);
       this.positionRestartPlayers(restart, attackingTeam === 'blue' ? this.blueTeam : this.redTeam);
+      this.emit({
+        minute: this.getCurrentMinute(),
+        type: 'corner',
+        team: attackingTeam,
+      });
     } else {
       const keeperTeam = defendingTeam === 'blue' ? this.blueTeam : this.redTeam;
       const restart = new Vector3(
@@ -287,6 +345,12 @@ export class MatchSystem {
     this.finished = true;
     this.message = 'Full time';
     soundHooks.fullTime();
+    this.emit({
+      minute: 90,
+      type: 'full',
+      team: 'neutral',
+      detail: `${this.score.blue}-${this.score.red}`,
+    });
     this.onComplete({ blueScore: this.score.blue, redScore: this.score.red });
   }
 }

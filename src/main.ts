@@ -1,3 +1,4 @@
+import './styles/tokens.css';
 import './styles.css';
 import { Game } from './game/Game';
 
@@ -30,7 +31,7 @@ void Game.create(app)
     console.error(error);
     if (loadingScreen) {
       loadingScreen.innerHTML = `
-        <strong>World 5s Cup could not start.</strong>
+        <strong>Global Retro Cup could not start.</strong>
         <span>Refresh the page or try again once your browser is online.</span>
       `;
     }

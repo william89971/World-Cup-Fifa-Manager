@@ -8,6 +8,8 @@ import { AIPlayerBrain, type AIPlayerState } from './AIPlayerBrain';
 import { getOffsideViolation } from './OffsideSystem';
 import { PossessionSystem } from './PossessionSystem';
 import { clampPositionToRoleZone } from './RoleZones';
+import type { ManagerTactics } from '../manager/types';
+import type { TeamColor } from '../entities/Player';
 
 export type AIState = AIPlayerState;
 
@@ -66,6 +68,11 @@ export class TeamAISystem {
   // getControlledPlayer callback still resolves a "focus" player for HUD/minimap
   // highlighting, but TeamAISystem treats them as just another AI agent.
   public managerMode = true;
+
+  // Per-team tactic overrides applied by the manager. The existing decision
+  // logic continues to use the team.teamStyle / formation as primary inputs;
+  // these tactics layer numeric multipliers on top via getTacticMultiplier().
+  private readonly tacticsByTeam = new Map<TeamColor, ManagerTactics>();
 
   constructor(
     private readonly ball: Ball,
@@ -131,6 +138,45 @@ export class TeamAISystem {
 
   getPossessionTeamName(): string {
     return this.possessionTeamName;
+  }
+
+  /** Set the manager tactics for one team. Multipliers below are derived from
+   *  these and applied to the existing AI decision math via getTacticMultiplier. */
+  setTacticsFor(teamColor: TeamColor, tactics: ManagerTactics): void {
+    this.tacticsByTeam.set(teamColor, tactics);
+  }
+
+  /** Read the current tactical override for a team, or undefined if none. */
+  getTacticsFor(teamColor: TeamColor): ManagerTactics | undefined {
+    return this.tacticsByTeam.get(teamColor);
+  }
+
+  /** Numeric multiplier applied to a known tactic dimension. Returns a value
+   *  centered on 1.0; 0.7..1.3 typical range based on slider extremes. */
+  getTacticMultiplier(team: Team, key: keyof ManagerTactics['sliders']): number {
+    const tactics = this.tacticsByTeam.get(team.color);
+    if (!tactics) return 1;
+    const v = tactics.sliders[key];
+    return 0.7 + (v / 100) * 0.6; // 0 → 0.7, 50 → 1.0, 100 → 1.3
+  }
+
+  /** Mentality multiplier: -2..+2 → 0.8..1.2 (higher = more aggressive). */
+  getMentalityMultiplier(team: Team): number {
+    const tactics = this.tacticsByTeam.get(team.color);
+    if (!tactics) return 1;
+    return 1 + tactics.mentality * 0.1;
+  }
+
+  /** Drop AI state for an outgoing player so the incoming one can re-init clean. */
+  notifyPlayerSwap(outgoingId: string, _incomingId: string): void {
+    this.cooldowns.delete(outgoingId);
+    this.states.delete(outgoingId);
+    this.brains.delete(outgoingId);
+    const sprite = this.debugLabels.get(outgoingId);
+    if (sprite) {
+      sprite.visible = false;
+      this.debugLabels.delete(outgoingId);
+    }
   }
 
   private updateDebugLabels(delta: number): void {

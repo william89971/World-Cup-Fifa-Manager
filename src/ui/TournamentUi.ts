@@ -1,5 +1,5 @@
 import type { Fixture, Standing, TournamentSnapshot } from '../tournament/TournamentState';
-import type { GameSettings, GraphicsQuality } from '../tournament/storage';
+import type { Difficulty, GameSettings, GraphicsQuality, SimDetail } from '../tournament/storage';
 import {
   TOURNAMENT_TEAMS,
   getTeamById,
@@ -71,6 +71,10 @@ export interface TournamentUiHandlers {
   onSetMobileControlsOpacity: (opacity: number) => void;
   onResetTournamentSave: () => void;
   onResetSettings: () => void;
+  onSetDifficulty: (difficulty: Difficulty) => void;
+  onSetSimDetail: (detail: SimDetail) => void;
+  onSetDefaultMatchSpeed: (speed: 1 | 2 | 4) => void;
+  onToggleDebugMode: () => void;
   onAcknowledgeMatchComplete: () => void;
   onOpenSquad: () => void;
   onOpenTactics: () => void;
@@ -386,6 +390,43 @@ export class TournamentUi {
             <button class="ui-button" data-action="toggle-sound">Sound hooks: ${settings.soundEnabled ? 'On' : 'Off'}</button>
           </div>
           <div>
+            <h2>Difficulty</h2>
+            <div class="segmented">
+              ${(['easy', 'normal', 'hard'] as const)
+                .map(
+                  (difficulty) =>
+                    `<button class="ui-button ${settings.difficulty === difficulty ? 'ui-button--primary' : ''}" data-action="set-difficulty" data-difficulty="${difficulty}">${difficulty}</button>`,
+                )
+                .join('')}
+            </div>
+          </div>
+          <div>
+            <h2>Simulation detail</h2>
+            <div class="segmented">
+              ${(['full', 'instant'] as const)
+                .map(
+                  (detail) =>
+                    `<button class="ui-button ${settings.simDetail === detail ? 'ui-button--primary' : ''}" data-action="set-sim-detail" data-detail="${detail}">${detail}</button>`,
+                )
+                .join('')}
+            </div>
+          </div>
+          <div>
+            <h2>Default match speed</h2>
+            <div class="segmented">
+              ${([1, 2, 4] as const)
+                .map(
+                  (speed) =>
+                    `<button class="ui-button ${settings.defaultMatchSpeed === speed ? 'ui-button--primary' : ''}" data-action="set-speed" data-speed="${speed}">${speed}×</button>`,
+                )
+                .join('')}
+            </div>
+          </div>
+          <div>
+            <h2>Debug</h2>
+            <button class="ui-button" data-action="toggle-debug">Debug mode: ${settings.debugMode ? 'On' : 'Off'}</button>
+          </div>
+          <div>
             <h2>Reset</h2>
             <button class="ui-button" data-action="reset-save">Reset tournament save</button>
             <button class="ui-button" data-action="reset-settings">Reset settings</button>
@@ -698,6 +739,19 @@ export class TournamentUi {
     else if (action === 'toggle-sound') this.handlers.onToggleSound();
     else if (action === 'reset-save') this.handlers.onResetTournamentSave();
     else if (action === 'reset-settings') this.handlers.onResetSettings();
+    else if (action === 'set-difficulty' && target.dataset.difficulty) {
+      const d = target.dataset.difficulty;
+      if (d === 'easy' || d === 'normal' || d === 'hard') this.handlers.onSetDifficulty(d);
+    }
+    else if (action === 'set-sim-detail' && target.dataset.detail) {
+      const d = target.dataset.detail;
+      if (d === 'full' || d === 'instant') this.handlers.onSetSimDetail(d);
+    }
+    else if (action === 'set-speed' && target.dataset.speed) {
+      const s = Number(target.dataset.speed);
+      if (s === 1 || s === 2 || s === 4) this.handlers.onSetDefaultMatchSpeed(s);
+    }
+    else if (action === 'toggle-debug') this.handlers.onToggleDebugMode();
     else if (action === 'match-complete-next') this.handlers.onAcknowledgeMatchComplete();
     else if (action === 'open-squad') this.handlers.onOpenSquad();
     else if (action === 'open-tactics') this.handlers.onOpenTactics();

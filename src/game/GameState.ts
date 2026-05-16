@@ -1,18 +1,31 @@
 import type { Fixture } from '../tournament/TournamentState';
 import type { FormationName, TeamStyle } from './playerTypes';
+import type { MatchReport } from '../manager/types';
 
 export type GameScreen =
   | 'home'
   | 'countrySelection'
-  | 'groupStage'
-  | 'matchPreview'
-  | 'pickTactics'
+  | 'managerHub'
+  | 'inbox'
   | 'squad'
+  | 'profile'
+  | 'tactics'
+  | 'formationPitch'
+  | 'lineup'
+  | 'fixtures'
+  | 'standings'
   | 'bracket'
-  | 'settings'
+  | 'matchPreview'
+  | 'scouting'
+  | 'training'
   | 'matchPlaying'
-  | 'matchComplete'
-  | 'champion';
+  | 'postMatch'
+  | 'champion'
+  | 'settings'
+  // Legacy aliases (still accepted by adapters in Game.ts):
+  | 'groupStage'
+  | 'pickTactics'
+  | 'matchComplete';
 
 export interface UserTactics {
   formation: FormationName;
@@ -23,7 +36,7 @@ export interface LiveMatchState {
   fixture: Fixture;
   userIsHome: boolean;
   userTactics?: UserTactics;
-  userLineup?: string[]; // player IDs in starting-XI order
+  userLineup?: string[];
 }
 
 export interface MatchResultSummary {
@@ -38,6 +51,12 @@ export interface GameState {
   screen: GameScreen;
   liveMatch?: LiveMatchState;
   lastMatchResult?: MatchResultSummary;
+  /** Most recent finished match report — used by PostMatchScreen. */
+  lastMatchReport?: MatchReport;
+  /** Currently focused player id for PlayerProfile screen. */
+  focusedPlayerId?: string;
+  /** Currently focused fixture id for previews opened from bracket/fixtures. */
+  focusedFixtureId?: string;
 }
 
 export function createInitialGameState(): GameState {

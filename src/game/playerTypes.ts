@@ -39,7 +39,7 @@ export const TEAM_STYLES = [
 
 export type TeamStyle = (typeof TEAM_STYLES)[number];
 
-export const FORMATION_NAMES = ['4-3-3', '4-4-2', '3-5-2'] as const;
+export const FORMATION_NAMES = ['4-3-3', '4-4-2', '4-2-3-1', '3-5-2', '5-3-2'] as const;
 
 export type FormationName = (typeof FORMATION_NAMES)[number];
 

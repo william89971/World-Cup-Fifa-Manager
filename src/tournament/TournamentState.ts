@@ -2,12 +2,22 @@ import { createKnockoutFixtures, createNextRoundFixtures, getNextRoundName, getR
 import { simulateMatch } from './simulation';
 import {
   createTournamentTeamProfilesSave,
+  ensureManagerDefaults,
   getTeamById,
   TOURNAMENT_TEAMS,
+  type TournamentPlayerProfile,
   type TournamentTeam,
   type TournamentTeamProfileSave,
 } from './teams';
 import { validateTournamentSaveData } from './validation';
+import type {
+  ManagerTactics,
+  LineupDraft,
+  NewsItem,
+  TrainingSession,
+  MatchReport,
+} from '../manager/types';
+import { createDefaultTactics } from '../manager/types';
 
 export type FixtureStage = 'Group' | KnockoutRoundName;
 export type FixtureStatus = 'pending' | 'complete';
@@ -55,6 +65,25 @@ export interface TournamentSnapshot {
   userEliminated: boolean;
 }
 
+export interface ManagerSnapshot {
+  team: TournamentTeam;
+  stageLabel: string;
+  nextFixture?: Fixture;
+  opponent?: TournamentTeam;
+  lastFiveResults: Array<'W' | 'D' | 'L'>;
+  avgCondition: number;
+  avgMorale: number;
+  unreadNews: number;
+  tactics: ManagerTactics;
+  lineup: LineupDraft;
+  qualified: boolean;
+  eliminated: boolean;
+  matchesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+}
+
 export interface TournamentSaveData {
   selectedTeamId: string;
   groups: Group[];
@@ -62,7 +91,23 @@ export interface TournamentSaveData {
   championTeamId?: string;
   userEliminated: boolean;
   teamProfiles?: TournamentTeamProfileSave[];
+  /** Schema version. Default 1 for legacy saves. */
+  version?: number;
+  /** Per-team lineup drafts (user typically). */
+  lineups?: Record<string, LineupDraft>;
+  /** Per-team manager tactics. */
+  tactics?: Record<string, ManagerTactics>;
+  /** Manager inbox / news feed (most recent first). */
+  news?: NewsItem[];
+  /** Recent training sessions (most recent first, capped). */
+  trainingHistory?: TrainingSession[];
+  /** Recent match reports (most recent first, capped). */
+  matchHistory?: MatchReport[];
 }
+
+export const SAVE_VERSION = 2;
+const MAX_HISTORY = 32;
+const MAX_NEWS = 80;
 
 export class TournamentState {
   readonly selectedTeamId: string;
@@ -71,14 +116,28 @@ export class TournamentState {
   readonly teamProfiles: TournamentTeamProfileSave[];
   championTeamId?: string;
   userEliminated = false;
+  // Manager-mode state — created with defaults if missing from save.
+  lineups: Record<string, LineupDraft> = {};
+  tactics: Record<string, ManagerTactics> = {};
+  news: NewsItem[] = [];
+  trainingHistory: TrainingSession[] = [];
+  matchHistory: MatchReport[] = [];
 
   constructor(selectedTeamId: string, saveData?: TournamentSaveData) {
     this.selectedTeamId = selectedTeamId;
     this.groups = saveData?.groups ?? this.createGroups();
     this.fixtures = saveData?.fixtures ?? this.createGroupFixtures();
-    this.teamProfiles = saveData?.teamProfiles ?? createTournamentTeamProfilesSave();
+    this.teamProfiles = saveData?.teamProfiles
+      ? this.normalizeProfiles(saveData.teamProfiles)
+      : createTournamentTeamProfilesSave();
     this.championTeamId = saveData?.championTeamId;
     this.userEliminated = saveData?.userEliminated ?? false;
+    this.lineups = saveData?.lineups ?? {};
+    this.tactics = saveData?.tactics ?? {};
+    this.news = saveData?.news ?? [];
+    this.trainingHistory = saveData?.trainingHistory ?? [];
+    this.matchHistory = saveData?.matchHistory ?? [];
+    this.ensureUserDefaults();
   }
 
   static fromSaveData(saveData: TournamentSaveData): TournamentState {
@@ -92,12 +151,65 @@ export class TournamentState {
 
   toSaveData(): TournamentSaveData {
     return {
+      version: SAVE_VERSION,
       selectedTeamId: this.selectedTeamId,
       groups: this.groups,
       fixtures: this.fixtures,
       championTeamId: this.championTeamId,
       userEliminated: this.userEliminated,
       teamProfiles: this.teamProfiles,
+      lineups: this.lineups,
+      tactics: this.tactics,
+      news: this.news,
+      trainingHistory: this.trainingHistory,
+      matchHistory: this.matchHistory,
+    };
+  }
+
+  private normalizeProfiles(saved: TournamentTeamProfileSave[]): TournamentTeamProfileSave[] {
+    return saved.map((profile) => ({
+      ...profile,
+      players: profile.players.map((p) => ensureManagerDefaults(p)),
+      bench: (profile.bench ?? this.deriveBenchFor(profile.teamId, profile.players)).map((p) =>
+        ensureManagerDefaults(p),
+      ),
+    }));
+  }
+
+  private deriveBenchFor(
+    teamId: string,
+    starters: TournamentPlayerProfile[],
+  ): TournamentPlayerProfile[] {
+    const base = TOURNAMENT_TEAMS.find((team) => team.id === teamId);
+    if (base) return base.bench;
+    // Fall back to a synthetic bench from starters (cheap clone) if the legacy save
+    // pre-dates the bench expansion and the base team can't be resolved.
+    return starters.slice(0, 7).map((p, index) => ({ ...p, number: 12 + index }));
+  }
+
+  private ensureUserDefaults(): void {
+    const teamId = this.selectedTeamId;
+    if (!this.lineups[teamId]) {
+      this.lineups[teamId] = this.defaultLineupFor(teamId);
+    }
+    if (!this.tactics[teamId]) {
+      const team = this.getTeam(teamId);
+      this.tactics[teamId] = createDefaultTactics(
+        team.formationPreferences[0] ?? '4-3-3',
+        team.teamStyle,
+      );
+    }
+  }
+
+  private defaultLineupFor(teamId: string): LineupDraft {
+    const team = this.getTeam(teamId);
+    const startingXI = team.players.map((p) => playerKey(teamId, p));
+    const bench = team.bench.map((p) => playerKey(teamId, p));
+    const captain = team.players.find((p) => p.personality === 'Captain') ?? team.players[0];
+    return {
+      startingXI,
+      bench,
+      captainId: captain ? playerKey(teamId, captain) : '',
     };
   }
 
@@ -129,6 +241,107 @@ export class TournamentState {
       teamStyle: savedProfile.teamStyle,
       formationPreferences: savedProfile.formationPreferences,
       players: savedProfile.players,
+      bench: savedProfile.bench ?? baseTeam.bench,
+    };
+  }
+
+  /** Get all 18 squad members for a team (starters + bench). */
+  getSquad(teamId: string): TournamentPlayerProfile[] {
+    const team = this.getTeam(teamId);
+    return [...team.players, ...team.bench];
+  }
+
+  get selectedTactics(): ManagerTactics {
+    return this.tactics[this.selectedTeamId];
+  }
+
+  get selectedLineup(): LineupDraft {
+    return this.lineups[this.selectedTeamId];
+  }
+
+  setTactics(teamId: string, tactics: ManagerTactics): void {
+    this.tactics[teamId] = tactics;
+  }
+
+  setLineup(teamId: string, lineup: LineupDraft): void {
+    this.lineups[teamId] = lineup;
+  }
+
+  pushNews(item: NewsItem): void {
+    this.news.unshift(item);
+    if (this.news.length > MAX_NEWS) this.news.length = MAX_NEWS;
+  }
+
+  markAllNewsRead(): void {
+    for (const n of this.news) n.read = true;
+  }
+
+  markNewsRead(id: string): void {
+    const found = this.news.find((n) => n.id === id);
+    if (found) found.read = true;
+  }
+
+  pushTraining(session: TrainingSession): void {
+    this.trainingHistory.unshift(session);
+    if (this.trainingHistory.length > MAX_HISTORY) this.trainingHistory.length = MAX_HISTORY;
+  }
+
+  pushMatchReport(report: MatchReport): void {
+    this.matchHistory.unshift(report);
+    if (this.matchHistory.length > MAX_HISTORY) this.matchHistory.length = MAX_HISTORY;
+  }
+
+  getManagerSnapshot(): ManagerSnapshot {
+    const team = this.getTeam(this.selectedTeamId);
+    const nextFixture = this.getNextUserFixture();
+    const opponent = nextFixture
+      ? this.getTeam(nextFixture.homeTeamId === this.selectedTeamId ? nextFixture.awayTeamId : nextFixture.homeTeamId)
+      : undefined;
+    const userResults: Array<'W' | 'D' | 'L'> = [];
+    let wins = 0, draws = 0, losses = 0;
+    for (const fixture of this.fixtures) {
+      if (fixture.status !== 'complete') continue;
+      if (fixture.homeTeamId !== this.selectedTeamId && fixture.awayTeamId !== this.selectedTeamId) continue;
+      const isHome = fixture.homeTeamId === this.selectedTeamId;
+      const us = (isHome ? fixture.homeScore : fixture.awayScore) ?? 0;
+      const them = (isHome ? fixture.awayScore : fixture.homeScore) ?? 0;
+      if (us > them) { wins += 1; userResults.push('W'); }
+      else if (us < them) { losses += 1; userResults.push('L'); }
+      else { draws += 1; userResults.push('D'); }
+    }
+    const squad = this.getSquad(this.selectedTeamId);
+    const avgCondition = average(squad.map((p) => p.condition ?? 100));
+    const avgMorale = average(squad.map((p) => p.morale ?? 70));
+    const unreadNews = this.news.filter((n) => !n.read).length;
+    const matchesPlayed = wins + draws + losses;
+    const groupForUser = this.groups.find((g) => g.teamIds.includes(this.selectedTeamId));
+    const standing = groupForUser?.standings.find((s) => s.teamId === this.selectedTeamId);
+    const stageLabel = nextFixture
+      ? nextFixture.stage === 'Group'
+        ? `Group ${groupForUser?.id ?? ''}`.trim()
+        : nextFixture.stage
+      : this.championTeamId
+      ? this.championTeamId === this.selectedTeamId
+        ? 'Champion'
+        : 'Tournament complete'
+      : 'Idle';
+    return {
+      team,
+      stageLabel,
+      nextFixture,
+      opponent,
+      lastFiveResults: userResults.slice(-5),
+      avgCondition,
+      avgMorale,
+      unreadNews,
+      tactics: this.selectedTactics,
+      lineup: this.selectedLineup,
+      qualified: (standing?.points ?? 0) >= 6,
+      eliminated: this.userEliminated,
+      matchesPlayed,
+      wins,
+      draws,
+      losses,
     };
   }
 
@@ -388,4 +601,23 @@ export class TournamentState {
   getRankedStandings(group: Group): Standing[] {
     return rankStandings(group.standings);
   }
+}
+
+export function playerKey(teamId: string, profile: TournamentPlayerProfile): string {
+  return `${teamId}:${profile.role}:${profile.number}`;
+}
+
+export function findPlayerByKey(
+  team: TournamentTeam,
+  key: string,
+): TournamentPlayerProfile | undefined {
+  const all = [...team.players, ...team.bench];
+  return all.find((p) => playerKey(team.id, p) === key);
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  let sum = 0;
+  for (const v of values) sum += v;
+  return sum / values.length;
 }

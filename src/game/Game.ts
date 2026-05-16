@@ -44,12 +44,39 @@ import { Hud } from '../ui/Hud';
 import { TournamentUi, resolveLineupByIds } from '../ui/TournamentUi';
 import { BALL, PHYSICS } from './constants';
 import { createCamera } from './camera';
-import { createInitialGameState, type UserTactics } from './GameState';
+import { createInitialGameState, type UserTactics, type GameScreen } from './GameState';
 import type { TournamentPlayerProfile } from '../tournament/teams';
 import { addLighting } from './lighting';
 import { createPitch, createScene } from './scene';
 import { soundHooks } from './soundHooks';
 import { createStadiumEnvironment } from './stadium';
+import { ScreenRouter } from '../app/ScreenRouter';
+import { AutosaveBadge } from '../save/AutosaveBadge';
+import { createHomeScreen } from '../screens/HomeScreen';
+import { createManagerHub } from '../screens/manager/ManagerHub';
+import { createSquadScreen } from '../screens/manager/SquadScreen';
+import { createPlayerProfile } from '../screens/manager/PlayerProfile';
+import { createTacticsScreen } from '../screens/manager/TacticsScreen';
+import { createFormationPitchScreen } from '../screens/manager/FormationPitchScreen';
+import { createLineupScreen } from '../screens/manager/LineupScreen';
+import { InMatchPanel, type InMatchTab } from '../screens/manager/InMatchPanel';
+import { createPostMatchScreen } from '../screens/manager/PostMatchScreen';
+import { createTrainingScreen } from '../screens/manager/TrainingScreen';
+import { createScoutingScreen } from '../screens/manager/ScoutingScreen';
+import { createInboxScreen } from '../screens/manager/InboxScreen';
+import { createFixturesScreen } from '../screens/manager/FixturesScreen';
+import { createStandingsScreen } from '../screens/manager/StandingsScreen';
+import { createBracketScreen } from '../screens/manager/BracketScreen';
+import { createMatchPreviewScreen } from '../screens/manager/MatchPreviewScreen';
+import type { LineupDraft, ManagerTactics, MatchReport, TrainingFocus, TrainingIntensity } from '../manager/types';
+import { findPlayerByKey } from '../tournament/TournamentState';
+import { MatchEventBus } from '../systems/MatchEventBus';
+import { MatchStatsSystem } from '../systems/MatchStatsSystem';
+import { CommentarySystem } from '../systems/CommentarySystem';
+import { SubstitutionSystem } from '../systems/SubstitutionSystem';
+import { applyMatchAftermath, buildMatchReportFromEngine } from '../manager/postmatch/applyAftermath';
+import { runTrainingSession } from '../manager/training/runTraining';
+import { generateTrainingNews } from '../manager/inbox/generators';
 
 export class Game {
   private readonly renderer: WebGLRenderer;
@@ -66,6 +93,7 @@ export class Game {
   private readonly shotFeedback: ShotFeedbackSystem;
   private readonly passTargetHint: PassTargetHintSystem;
   private readonly tournamentUi: TournamentUi;
+  private readonly router: ScreenRouter;
   private readonly stadium = createStadiumEnvironment();
   private readonly state = createInitialGameState();
   private settings: GameSettings = loadSettings();
@@ -80,6 +108,14 @@ export class Game {
   private keeperBlockSystem?: KeeperBlockSystem;
   private cameraSystem?: CameraSystem;
   private matchSystem?: MatchSystem;
+  // Match-scoped engine extensions (Wave 3).
+  private matchBus?: MatchEventBus;
+  private statsSystem?: MatchStatsSystem;
+  private commentarySystem?: CommentarySystem;
+  private subSystem?: SubstitutionSystem;
+  private inMatchPanel?: InMatchPanel;
+  private halftimeOverlay?: HTMLDivElement;
+  private halftimeShown = false;
   private physicsAccumulator = 0;
   private animationFrame = 0;
   private lastTimestamp = 0;
@@ -89,6 +125,13 @@ export class Game {
   // once by startPlayableFixture → rebuildMatchTeams.
   private pendingUserTactics?: UserTactics;
   private pendingUserLineupIds?: string[];
+
+  // Manager-mode screen state (Wave 2+). Persisted across re-renders of the same screen.
+  private squadTab: 'xi' | 'bench' | 'all' = 'all';
+  private squadSort: 'role' | 'ovr' | 'condition' | 'morale' | 'form' = 'role';
+  private squadFilter: 'all' | 'GK' | 'DEF' | 'MID' | 'ATT' = 'all';
+  private fixturesFilter: 'all' | 'mine' | 'group' | 'knockouts' = 'all';
+  private fixturesStatus: 'all' | 'results' | 'upcoming' = 'all';
 
   private constructor(
     private readonly root: HTMLElement,
@@ -117,6 +160,11 @@ export class Game {
     }
 
     this.hud = new Hud(this.root);
+    this.hud.bindActions({
+      onTogglePause: () => this.matchSystem?.togglePause(),
+      onSetSpeed: (speed) => this.matchSystem?.setSpeed(speed),
+      onOpenPanel: (tab) => this.openInMatchPanel(tab),
+    });
     this.minimap = new MinimapSystem(this.root);
     this.possessionIndicator = new PossessionIndicatorSystem(this.scene, this.ball);
     this.shotFeedback = new ShotFeedbackSystem(
@@ -129,6 +177,9 @@ export class Game {
     this.touchControls = new TouchControls(this.root);
     this.input = new CombinedInput([this.keyboardInput, this.touchControls]);
     this.tournamentUi = new TournamentUi(this.root);
+    this.router = new ScreenRouter(this.root);
+    new AutosaveBadge(this.root);
+    this.registerScreens();
     this.tournamentUi.bind({
       onNewTournament: this.handleNewTournament,
       onContinueTournament: this.handleContinueTournament,
@@ -154,13 +205,367 @@ export class Game {
       onOpenSquad: this.handleOpenSquad,
       onOpenTactics: this.handleOpenTactics,
       onConfirmTactics: this.handleConfirmTactics,
+      onSetDifficulty: (difficulty) => {
+        this.settings = { ...this.settings, difficulty };
+        saveSettings(this.settings);
+        this.handleOpenSettings();
+      },
+      onSetSimDetail: (simDetail) => {
+        this.settings = { ...this.settings, simDetail };
+        saveSettings(this.settings);
+        this.handleOpenSettings();
+      },
+      onSetDefaultMatchSpeed: (defaultMatchSpeed) => {
+        this.settings = { ...this.settings, defaultMatchSpeed };
+        saveSettings(this.settings);
+        this.matchSystem?.setSpeed(defaultMatchSpeed);
+        this.handleOpenSettings();
+      },
+      onToggleDebugMode: () => {
+        this.settings = { ...this.settings, debugMode: !this.settings.debugMode };
+        saveSettings(this.settings);
+        this.handleOpenSettings();
+      },
     });
     this.applySettings();
     this.updateTouchControlsVisibility();
-    this.tournamentUi.renderHome(hasTournamentSave());
+    this.showHomeScreen();
 
     window.addEventListener('resize', this.handleResize);
   }
+
+  private registerScreens(): void {
+    this.router.register('home', createHomeScreen({
+      onTournament: this.handleHomeTournament,
+      onManagerMode: this.handleHomeManagerMode,
+      onTraining: this.handleHomeTraining,
+      onSettings: this.handleOpenSettings,
+    }));
+    this.router.register('managerHub', createManagerHub({
+      onBack: this.handleOpenHome,
+      onContinue: this.handleManagerContinue,
+      onSimulateNext: this.handleSimulateNextMatch,
+      onNavigate: this.handleManagerNavigate,
+      onSaveAndQuit: this.handleManagerSaveAndQuit,
+    }));
+    this.router.register('squad', createSquadScreen({
+      onBack: this.handleOpenManagerHub,
+      onOpenPlayer: this.handleOpenPlayerProfile,
+      onSetCaptain: this.handleSetCaptain,
+      onMoveToXI: () => {},
+      onMoveToBench: () => {},
+      onSetTab: (tab) => { this.squadTab = tab; this.showSquad(); },
+      onSetSort: (sort) => { this.squadSort = sort; this.showSquad(); },
+      onSetFilter: (filter) => { this.squadFilter = filter; this.showSquad(); },
+    }));
+    this.router.register('profile', createPlayerProfile({
+      onBack: this.handleOpenSquad,
+      onSetCaptain: this.handleSetCaptain,
+      onSaveNotes: this.handleSavePlayerNotes,
+    }));
+    this.router.register('tactics', createTacticsScreen({
+      onBack: this.handleOpenManagerHub,
+      onSave: this.handleSaveTactics,
+      onOpenPitch: this.handleOpenFormationPitch,
+    }));
+    this.router.register('formationPitch', createFormationPitchScreen({
+      onBack: this.handleOpenManagerHub,
+      onSaveLineup: this.handleSaveLineup,
+    }));
+    this.router.register('lineup', createLineupScreen({
+      onBack: this.handleOpenManagerHub,
+      onConfirm: this.handleConfirmLineup,
+      onOpenPitch: this.handleOpenFormationPitch,
+    }));
+    this.router.register('postMatch', createPostMatchScreen({
+      onContinue: this.handleOpenManagerHub,
+      onOpenStandings: () => this.handleManagerNavigate('standings'),
+      onOpenSquad: () => this.handleManagerNavigate('squad'),
+    }));
+    this.router.register('training', createTrainingScreen({
+      onBack: this.handleOpenManagerHub,
+      onRunTraining: this.handleRunTraining,
+    }));
+    this.router.register('scouting', createScoutingScreen({
+      onBack: this.handleOpenManagerHub,
+      onApplySuggested: this.handleApplyScoutTactics,
+      onOpenLineup: () => this.handleManagerNavigate('lineup'),
+    }));
+    this.router.register('inbox', createInboxScreen({
+      onBack: this.handleOpenManagerHub,
+      onMarkRead: this.handleMarkNewsRead,
+      onMarkAllRead: this.handleMarkAllNewsRead,
+    }));
+    this.router.register('fixtures', createFixturesScreen({
+      onBack: this.handleOpenManagerHub,
+      onSetFilter: (f) => { this.fixturesFilter = f; this.showFixtures(); },
+      onSetStatus: (s) => { this.fixturesStatus = s; this.showFixtures(); },
+    }));
+    this.router.register('standings', createStandingsScreen({
+      onBack: this.handleOpenManagerHub,
+    }));
+    this.router.register('bracket', createBracketScreen({
+      onBack: this.handleOpenManagerHub,
+    }));
+    this.router.register('matchPreview', createMatchPreviewScreen({
+      onBack: this.handleOpenManagerHub,
+      onWatchMatch: this.handleWatchMatch,
+      onSimulate: this.handleSimulateUpcoming,
+      onOpenLineup: () => this.handleManagerNavigate('lineup'),
+      onOpenTactics: () => this.handleManagerNavigate('tactics'),
+      onOpenScouting: () => this.handleManagerNavigate('scouting'),
+    }));
+  }
+
+  private showFixtures(): void {
+    if (!this.tournament) return;
+    this.routerShow('fixtures', {
+      tournament: this.tournament,
+      filter: this.fixturesFilter,
+      status: this.fixturesStatus,
+    });
+  }
+
+  private handleRunTraining = (focus: TrainingFocus, intensity: TrainingIntensity): void => {
+    if (!this.tournament) return;
+    const session = runTrainingSession(this.tournament, { focus, intensity });
+    const news = generateTrainingNews(session, this.tournament);
+    for (const item of news) this.tournament.pushNews(item);
+    saveTournament(this.tournament);
+  };
+
+  private handleApplyScoutTactics = (tactics: ManagerTactics): void => {
+    if (!this.tournament) return;
+    this.tournament.setTactics(this.tournament.selectedTeamId, tactics);
+    saveTournament(this.tournament);
+    this.handleOpenManagerHub();
+  };
+
+  private handleMarkNewsRead = (id: string): void => {
+    if (!this.tournament) return;
+    this.tournament.markNewsRead(id);
+    saveTournament(this.tournament);
+  };
+
+  private handleMarkAllNewsRead = (): void => {
+    if (!this.tournament) return;
+    this.tournament.markAllNewsRead();
+    saveTournament(this.tournament);
+  };
+
+  private handleWatchMatch = (): void => {
+    if (!this.tournament) return;
+    const fixture = this.tournament.getNextUserFixture();
+    if (!fixture) {
+      this.handleOpenManagerHub();
+      return;
+    }
+    const userTactics = this.tournament.tactics[this.tournament.selectedTeamId];
+    this.pendingUserTactics = userTactics
+      ? { formation: userTactics.formation, teamStyle: userTactics.teamStyle }
+      : undefined;
+    const lineup = this.tournament.selectedLineup;
+    this.pendingUserLineupIds = lineup?.startingXI;
+    this.startPlayableFixture(fixture);
+  };
+
+  private handleSimulateUpcoming = (): void => {
+    this.handleSimulateNextMatch();
+  };
+
+  private routerShow<P>(screen: Parameters<ScreenRouter['show']>[0], props: P): void {
+    this.tournamentUi.hide();
+    this.state.screen = screen as typeof this.state.screen;
+    this.updateTouchControlsVisibility();
+    this.router.show(screen, props);
+  }
+
+  private handleOpenManagerHub = (): void => {
+    if (!this.tournament) {
+      this.showHomeScreen();
+      return;
+    }
+    this.routerShow('managerHub', { tournament: this.tournament });
+  };
+
+  private handleManagerContinue = (): void => {
+    if (!this.tournament) return;
+    const fixture = this.tournament.getNextUserFixture();
+    if (!fixture) {
+      // Fall back to simulate-next behaviour if user has no upcoming fixture.
+      this.handleSimulateNextMatch();
+      return;
+    }
+    // Send to lineup → preview → match flow.
+    this.routerShow('lineup', { tournament: this.tournament, upcomingFixture: fixture });
+  };
+
+  private handleManagerSaveAndQuit = (): void => {
+    if (this.tournament) saveTournament(this.tournament);
+    this.handleOpenHome();
+  };
+
+  private handleManagerNavigate = (
+    target: 'squad' | 'tactics' | 'lineup' | 'pitch' | 'training' | 'scouting' | 'fixtures' | 'standings' | 'bracket' | 'inbox' | 'settings',
+  ): void => {
+    if (!this.tournament) { this.showHomeScreen(); return; }
+    switch (target) {
+      case 'squad': this.showSquad(); break;
+      case 'tactics': this.routerShow('tactics', { tournament: this.tournament }); break;
+      case 'lineup': this.routerShow('lineup', { tournament: this.tournament, upcomingFixture: this.tournament.getNextUserFixture() }); break;
+      case 'pitch': this.routerShow('formationPitch', { tournament: this.tournament }); break;
+      case 'training':
+        if (this.router.has('training')) this.routerShow('training', { tournament: this.tournament });
+        else this.handleOpenManagerHub();
+        break;
+      case 'scouting':
+        if (this.router.has('scouting')) this.routerShow('scouting', { tournament: this.tournament });
+        else this.handleOpenManagerHub();
+        break;
+      case 'fixtures': this.showFixtures(); break;
+      case 'standings': this.routerShow('standings', { tournament: this.tournament }); break;
+      case 'bracket': this.routerShow('bracket', { tournament: this.tournament }); break;
+      case 'inbox':
+        if (this.router.has('inbox')) this.routerShow('inbox', { tournament: this.tournament });
+        else this.handleOpenManagerHub();
+        break;
+      case 'settings':
+        this.handleOpenSettings();
+        break;
+    }
+  };
+
+  private showSquad(): void {
+    if (!this.tournament) return;
+    this.routerShow('squad', {
+      tournament: this.tournament,
+      tab: this.squadTab,
+      sortBy: this.squadSort,
+      filterRole: this.squadFilter,
+    });
+  }
+
+  private handleOpenSquad = (): void => { this.showSquad(); };
+
+  private handleOpenPlayerProfile = (playerId: string): void => {
+    if (!this.tournament) return;
+    this.state.focusedPlayerId = playerId;
+    this.routerShow('profile', { tournament: this.tournament, playerId });
+  };
+
+  private handleSetCaptain = (playerId: string): void => {
+    if (!this.tournament) return;
+    const lineup = this.tournament.selectedLineup;
+    if (!lineup) return;
+    lineup.captainId = playerId;
+    // Mark profile.isCaptain on the right player.
+    const team = this.tournament.getTeam(this.tournament.selectedTeamId);
+    for (const p of [...team.players, ...team.bench]) {
+      p.isCaptain = false;
+    }
+    const target = findPlayerByKey(team, playerId);
+    if (target) target.isCaptain = true;
+    saveTournament(this.tournament);
+    // Stay on current screen.
+    if (this.state.screen === 'squad') this.showSquad();
+    else if (this.state.screen === 'profile') this.handleOpenPlayerProfile(playerId);
+  };
+
+  private handleSavePlayerNotes = (playerId: string, notes: string): void => {
+    if (!this.tournament) return;
+    const team = this.tournament.getTeam(this.tournament.selectedTeamId);
+    const target = findPlayerByKey(team, playerId);
+    if (target) target.notes = notes;
+    saveTournament(this.tournament);
+  };
+
+  private handleSaveTactics = (tactics: ManagerTactics): void => {
+    if (!this.tournament) return;
+    this.tournament.setTactics(this.tournament.selectedTeamId, tactics);
+    saveTournament(this.tournament);
+    this.handleOpenManagerHub();
+  };
+
+  private handleOpenFormationPitch = (): void => {
+    if (!this.tournament) return;
+    this.routerShow('formationPitch', { tournament: this.tournament });
+  };
+
+  private handleSaveLineup = (lineup: LineupDraft): void => {
+    if (!this.tournament) return;
+    this.tournament.setLineup(this.tournament.selectedTeamId, lineup);
+    saveTournament(this.tournament);
+    this.handleOpenManagerHub();
+  };
+
+  private handleConfirmLineup = (lineup: LineupDraft): void => {
+    if (!this.tournament) return;
+    this.tournament.setLineup(this.tournament.selectedTeamId, lineup);
+    saveTournament(this.tournament);
+    const fixture = this.tournament.getNextUserFixture();
+    if (!fixture) {
+      this.handleOpenManagerHub();
+      return;
+    }
+    this.routerShow('matchPreview', { tournament: this.tournament, fixture });
+  };
+
+  private showHomeScreen(): void {
+    this.tournamentUi.hide();
+    const summary = this.buildSaveSummary();
+    this.router.show('home', { hasSave: hasTournamentSave(), saveSummary: summary });
+  }
+
+  private buildSaveSummary(): string | undefined {
+    const tournament = this.tournament ?? loadTournament();
+    if (!tournament) return undefined;
+    const snap = tournament.getSnapshot();
+    const stage = snap.currentFixture?.stage ?? snap.nextFixture?.stage ?? 'Tournament';
+    const stageLabel = stage === 'Group' ? 'Group Stage' : stage;
+    return `Save: ${snap.selectedTeam.name} · ${stageLabel}`;
+  }
+
+  private readonly handleHomeTournament = (): void => {
+    if (hasTournamentSave()) {
+      // Continue is the default; new tournament is via modal.
+      this.handleContinueTournament();
+    } else {
+      this.handleNewTournament();
+    }
+  };
+
+  private readonly handleHomeManagerMode = (): void => {
+    if (hasTournamentSave()) {
+      this.handleContinueTournament();
+    } else {
+      this.handleNewTournament();
+    }
+  };
+
+  private readonly handleHomeTraining = (): void => {
+    if (hasTournamentSave()) {
+      const tournament = loadTournament();
+      if (tournament) {
+        this.clearLiveMatch();
+        this.tournament = tournament;
+        // Wave 2 will route to the dedicated training screen; for now use the manager-hub-ish
+        // groupStage view so the button is wired and the rest of the flow stays accessible.
+        this.router.hide();
+        this.tournamentUi.show();
+        this.state.screen = 'training';
+        if (this.router.has('training')) {
+          this.tournamentUi.hide();
+          this.router.show('training', { tournament });
+        } else {
+          this.state.screen = 'groupStage';
+          this.tournamentUi.renderGroupStage(tournament.getSnapshot());
+        }
+      }
+    } else {
+      console.log('[menu] Training requested with no save — sending to country selection');
+      this.handleNewTournament();
+    }
+  };
 
   static async create(root: HTMLElement): Promise<Game> {
     const physics = await createPhysicsWorld();
@@ -223,6 +628,16 @@ export class Game {
     if (this.input.wasPausePressed()) {
       this.matchSystem.togglePause();
     }
+    if (this.keyboardInput.wasManagerPausePressed()) {
+      this.matchSystem.togglePause();
+    }
+    if (this.keyboardInput.wasManagerSpeed1Pressed()) this.matchSystem.setSpeed(1);
+    if (this.keyboardInput.wasManagerSpeed2Pressed()) this.matchSystem.setSpeed(2);
+    if (this.keyboardInput.wasManagerSpeed4Pressed()) this.matchSystem.setSpeed(4);
+    if (this.keyboardInput.wasManagerEscapePressed() && this.inMatchPanel?.isOpen()) {
+      this.inMatchPanel.close();
+      if (this.matchSystem.getViewState().paused) this.matchSystem.togglePause();
+    }
 
     if (this.input.wasRestartPressed()) {
       this.debugVisible = false;
@@ -232,15 +647,20 @@ export class Game {
 
     this.possessionSystem.update([this.blueTeam, this.redTeam], delta);
 
+    const speed = this.matchSystem.getSpeed();
+    const scaledDelta = delta * speed;
     if (!this.matchSystem.isResetting) {
       this.playerSelection.update();
       this.playerControl.update(delta);
-      this.teamAI.update(delta);
-      this.tackleSystem?.update([this.blueTeam, this.redTeam], delta);
+      this.teamAI.update(scaledDelta);
+      this.tackleSystem?.update([this.blueTeam, this.redTeam], scaledDelta);
       this.possessionSystem.update([this.blueTeam, this.redTeam], delta);
     }
 
     this.matchSystem.update(delta);
+    this.statsSystem?.update(scaledDelta);
+    const possessionTeamColor = this.possessionSystem.getState().team?.color;
+    this.commentarySystem?.update(scaledDelta, this.matchSystem.getCurrentMinute(), possessionTeamColor);
     this.keeperBlockSystem?.sync();
     this.updatePlayerVisuals(delta);
     this.updateHud();
@@ -289,6 +709,14 @@ export class Game {
         this.playerControl.getCallForPassMessage() ||
         matchView.message,
       stageLabel: this.state.liveMatch?.fixture.stage ?? 'Friendly',
+      // Manager-mode enrichment
+      stats: this.statsSystem?.getStats(),
+      commentary: this.commentarySystem?.getLines(6),
+      subsRemaining: this.subSystem
+        ? { home: this.subSystem.getSubsRemaining('blue'), away: this.subSystem.getSubsRemaining('red') }
+        : undefined,
+      speed: this.matchSystem.getSpeed(),
+      paused: matchView.paused,
       debugVisible: this.debugVisible,
       debugLines: [
         `FPS: ${this.fps}`,
@@ -375,12 +803,143 @@ export class Game {
       () => this.possessionSystem?.forceLoose('kickoff reset', 300),
       () => this.possessionSystem?.getLastTouchTeam()?.color,
     );
+    // Wave 3: match-scoped engine extensions.
+    this.matchBus = new MatchEventBus();
+    this.matchSystem.attachEventBus(this.matchBus);
+    this.tackleSystem?.attachEventBus(this.matchBus, () => this.matchSystem?.getCurrentMinute() ?? 0);
+    this.statsSystem = new MatchStatsSystem(this.possessionSystem!, this.blueTeam!, this.redTeam!);
+    this.commentarySystem = new CommentarySystem(this.blueTeam!, this.redTeam!);
+    this.subSystem = new SubstitutionSystem(this.blueTeam!, this.redTeam!, this.matchBus, this.teamAI!, {
+      add: (g: unknown) => this.scene.add(g as never),
+      remove: (g: unknown) => this.scene.remove(g as never),
+    });
+    this.matchBus.on((event) => {
+      this.statsSystem?.onEvent(event);
+      this.commentarySystem?.onEvent(event);
+      if (event.type === 'half' && !this.halftimeShown) this.showHalftimeOverlay();
+    });
+    // Apply user-saved tactics to the AI for both teams.
+    if (this.tournament) {
+      const userTactics = this.tournament.tactics[this.tournament.selectedTeamId];
+      if (userTactics) this.teamAI?.setTacticsFor(this.blueTeam!.color, userTactics);
+      const opponentTeamId = userIsHome ? fixture.awayTeamId : fixture.homeTeamId;
+      const opponentTactics = this.tournament.tactics[opponentTeamId];
+      if (opponentTactics) this.teamAI?.setTacticsFor(this.redTeam!.color, opponentTactics);
+    }
+    this.halftimeShown = false;
+    if (!this.inMatchPanel) {
+      this.inMatchPanel = new InMatchPanel(this.root, {
+        onClose: () => { this.inMatchPanel?.close(); this.matchSystem?.togglePause(); },
+        onSetTab: (tab) => this.inMatchPanel?.setTab(tab),
+        onApplyTactics: (tactics) => this.handleInMatchTacticChange(tactics),
+        onConfirmSub: (outId, inId) => this.handleInMatchSub(outId, inId),
+      });
+    }
     this.tournamentUi.hide();
+    this.router.hide();
     this.hud.show();
     this.minimap.show();
     this.state.screen = 'matchPlaying';
     this.updateTouchControlsVisibility();
     this.updateHud();
+  }
+
+  private openInMatchPanel(tab: InMatchTab): void {
+    if (!this.inMatchPanel || !this.matchSystem || !this.blueTeam || !this.subSystem) return;
+    // Pause the match while the panel is open.
+    if (!this.matchSystem.getViewState().paused) this.matchSystem.togglePause();
+    const xi = this.blueTeam.players.map((p) => ({ id: p.id, name: p.displayName, role: p.role, number: p.number }));
+    const bench = this.blueTeam.bench.map((p) => ({ id: p.id, name: p.displayName, role: p.role, number: p.number }));
+    this.inMatchPanel.open({
+      open: true,
+      tab,
+      tactics: this.tournament?.tactics[this.tournament.selectedTeamId] ?? {
+        formation: this.blueTeam.formation,
+        teamStyle: this.blueTeam.teamStyle,
+        mentality: 0,
+        sliders: { pressing: 60, lineHeight: 55, tempo: 55, width: 50, directness: 50, risk: 50, buildUp: 50, tackling: 55 },
+      },
+      subsRemaining: this.subSystem.getSubsRemaining('blue'),
+      startingXI: xi,
+      bench,
+      stats: this.statsSystem?.getStats() ?? {
+        possessionPct: 50, shots: { home: 0, away: 0 }, shotsOnTarget: { home: 0, away: 0 }, passes: { home: 0, away: 0 }, passAccuracy: { home: 80, away: 80 }, tackles: { home: 0, away: 0 }, fouls: { home: 0, away: 0 }, corners: { home: 0, away: 0 }, offsides: { home: 0, away: 0 }, yellows: { home: 0, away: 0 }, reds: { home: 0, away: 0 },
+      },
+      events: this.statsSystem?.getEvents(20) ?? [],
+    });
+  }
+
+  private handleInMatchTacticChange(tactics: ManagerTactics): void {
+    if (!this.tournament || !this.teamAI || !this.blueTeam || !this.matchBus || !this.matchSystem) return;
+    this.tournament.setTactics(this.tournament.selectedTeamId, tactics);
+    this.teamAI.setTacticsFor(this.blueTeam.color, tactics);
+    this.matchBus.emit({
+      minute: this.matchSystem.getCurrentMinute(),
+      type: 'tactic',
+      team: 'blue',
+      detail: `${tactics.formation} · ${tactics.teamStyle}`,
+    });
+    saveTournament(this.tournament);
+    // Refresh panel UI.
+    this.openInMatchPanel('tactics');
+  }
+
+  private handleInMatchSub(outId: string, inId: string): void {
+    if (!this.subSystem || !this.matchSystem) return;
+    const result = this.subSystem.requestSub('blue', outId, inId, this.matchSystem.getCurrentMinute());
+    if (!result.ok) console.warn('[sub] rejected:', result.reason);
+    // Refresh panel with new bench/XI state.
+    this.openInMatchPanel('subs');
+  }
+
+  private showHalftimeOverlay(): void {
+    if (this.halftimeShown) return;
+    this.halftimeShown = true;
+    if (!this.matchSystem) return;
+    const score = this.matchSystem.getViewState().score;
+    // Pause match while overlay is shown.
+    if (!this.matchSystem.getViewState().paused) this.matchSystem.togglePause();
+    const overlay = document.createElement('div');
+    overlay.className = 'mgr-halftime';
+    overlay.innerHTML = `
+      <div class="mgr-halftime__card">
+        <p class="mgr-topbar__eyebrow">Half time</p>
+        <h2>${this.blueTeam?.name ?? 'Home'} ${score.blue} - ${score.red} ${this.redTeam?.name ?? 'Away'}</h2>
+        <p class="mgr-muted">Team talk — pick the message:</p>
+        <button class="mgr-btn mgr-btn--primary" data-team-talk="encourage">Encourage (morale +)</button>
+        <button class="mgr-btn" data-team-talk="calm">Calm down (composure +)</button>
+        <button class="mgr-btn" data-team-talk="press">Demand pressing (intensity +)</button>
+      </div>
+    `;
+    document.body.append(overlay);
+    this.halftimeOverlay = overlay;
+    overlay.addEventListener('click', (event) => {
+      const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-team-talk]') : null;
+      if (!target) return;
+      this.applyTeamTalk(target.dataset.teamTalk as 'encourage' | 'calm' | 'press');
+      overlay.remove();
+      this.halftimeOverlay = undefined;
+      if (this.matchSystem?.getViewState().paused) this.matchSystem.togglePause();
+    });
+  }
+
+  private applyTeamTalk(kind: 'encourage' | 'calm' | 'press'): void {
+    if (!this.tournament || !this.blueTeam) return;
+    // Encourage → small morale bump on every starter
+    if (kind === 'encourage') {
+      const team = this.tournament.getTeam(this.tournament.selectedTeamId);
+      for (const p of team.players) {
+        p.morale = Math.min(100, (p.morale ?? 70) + 4);
+      }
+    } else if (kind === 'press' && this.teamAI) {
+      const current = this.tournament.tactics[this.tournament.selectedTeamId];
+      if (current) {
+        const next: ManagerTactics = { ...current, sliders: { ...current.sliders, pressing: Math.min(100, current.sliders.pressing + 15) } };
+        this.tournament.setTactics(this.tournament.selectedTeamId, next);
+        this.teamAI.setTacticsFor(this.blueTeam.color, next);
+      }
+    }
+    saveTournament(this.tournament);
   }
 
   private rebuildMatchTeams(
@@ -402,8 +961,12 @@ export class Game {
       formation: userFormation,
       teamStyle: userTactics?.teamStyle,
       lineupOverride,
+      bench: userTeam.bench,
     });
-    this.redTeam = createTeam('red', opponentTeam, { formation: opponentFormation });
+    this.redTeam = createTeam('red', opponentTeam, {
+      formation: opponentFormation,
+      bench: opponentTeam.bench,
+    });
 
     for (const player of [...this.blueTeam.players, ...this.redTeam.players]) {
       this.scene.add(player.group);
@@ -474,6 +1037,15 @@ export class Game {
     this.teamAI = undefined;
     this.tackleSystem = undefined;
     this.cameraSystem = undefined;
+    this.statsSystem = undefined;
+    this.commentarySystem = undefined;
+    this.subSystem = undefined;
+    this.matchBus?.clear();
+    this.matchBus = undefined;
+    this.inMatchPanel?.close();
+    this.halftimeOverlay?.remove();
+    this.halftimeOverlay = undefined;
+    this.halftimeShown = false;
     this.state.liveMatch = undefined;
     this.clearMatchTeams();
     this.blueTeam = undefined;
@@ -488,35 +1060,41 @@ export class Game {
 
   private readonly handleNewTournament = (): void => {
     clearTournamentSave();
+    this.router.hide();
     this.clearLiveMatch();
     this.tournament = undefined;
     this.state.lastMatchResult = undefined;
     this.state.screen = 'countrySelection';
     this.updateTouchControlsVisibility();
+    this.tournamentUi.show();
     this.tournamentUi.renderCountrySelection();
   };
 
   private readonly handleContinueTournament = (): void => {
     const tournament = loadTournament();
     if (!tournament) {
-      this.tournamentUi.renderHome(false);
+      this.showHomeScreen();
       return;
     }
 
     this.clearLiveMatch();
     this.tournament = tournament;
-    this.state.screen = tournament.championTeamId ? 'champion' : 'groupStage';
-    this.updateTouchControlsVisibility();
-    this.renderCurrentTournamentScreen();
+    if (tournament.championTeamId) {
+      this.router.hide();
+      this.tournamentUi.show();
+      this.state.screen = 'champion';
+      this.updateTouchControlsVisibility();
+      this.tournamentUi.renderChampion(tournament.getSnapshot());
+      return;
+    }
+    this.handleOpenManagerHub();
   };
 
   private readonly handleTeamSelected = (teamId: string): void => {
     this.tournament = new TournamentState(teamId);
     this.tournament.simulateUntilUserMatchOrComplete();
     saveTournament(this.tournament);
-    this.state.screen = 'groupStage';
-    this.updateTouchControlsVisibility();
-    this.tournamentUi.renderGroupStage(this.tournament.getSnapshot());
+    this.handleOpenManagerHub();
   };
 
   private readonly handlePlayNextMatch = (): void => {
@@ -569,9 +1147,38 @@ export class Game {
     const awayScore = liveMatch.userIsHome ? result.redScore : result.blueScore;
     const fixture = liveMatch.fixture;
     this.tournament.recordUserFixture(fixture.id, homeScore, awayScore);
+
+    // Build full match report from engine stats + events.
+    const statsSnapshot = this.statsSystem?.getStats() ?? {
+      possessionPct: 50,
+      shots: { home: 0, away: 0 },
+      shotsOnTarget: { home: 0, away: 0 },
+      passes: { home: 0, away: 0 },
+      passAccuracy: { home: 80, away: 80 },
+      tackles: { home: 0, away: 0 },
+      fouls: { home: 0, away: 0 },
+      corners: { home: 0, away: 0 },
+      offsides: { home: 0, away: 0 },
+      yellows: { home: 0, away: 0 },
+      reds: { home: 0, away: 0 },
+    };
+    const eventsSnapshot = this.statsSystem?.getEvents(200) ?? [];
+
+    const report: MatchReport = buildMatchReportFromEngine(this.tournament, {
+      fixtureId: fixture.id,
+      homeTeamId: fixture.homeTeamId,
+      awayTeamId: fixture.awayTeamId,
+      homeScore,
+      awayScore,
+      stage: fixture.stage,
+      stats: statsSnapshot,
+      events: eventsSnapshot,
+    });
+    applyMatchAftermath(this.tournament, report);
     this.tournament.simulateUntilUserMatchOrComplete();
     saveTournament(this.tournament);
 
+    this.state.lastMatchReport = report;
     this.state.lastMatchResult = {
       userTeamName: this.blueTeam?.name ?? 'User',
       opponentTeamName: this.redTeam?.name ?? 'Opponent',
@@ -580,10 +1187,7 @@ export class Game {
       stage: fixture.stage,
     };
     this.clearLiveMatch();
-    this.tournamentUi.show();
-    this.state.screen = 'matchComplete';
-    this.updateTouchControlsVisibility();
-    this.tournamentUi.renderMatchComplete(this.state.lastMatchResult);
+    this.routerShow('postMatch', { tournament: this.tournament, report });
   };
 
   private readonly handleAcknowledgeMatchComplete = (): void => {
@@ -596,7 +1200,7 @@ export class Game {
     this.clearLiveMatch();
     this.state.screen = 'home';
     this.updateTouchControlsVisibility();
-    this.tournamentUi.renderHome(hasTournamentSave());
+    this.showHomeScreen();
   };
 
   private readonly handleOpenCountrySelection = (): void => {
@@ -611,6 +1215,8 @@ export class Game {
       this.handleOpenHome();
       return;
     }
+    this.router.hide();
+    this.tournamentUi.show();
     this.state.screen = 'groupStage';
     this.updateTouchControlsVisibility();
     this.tournamentUi.renderGroupStage(this.tournament.getSnapshot());
@@ -621,6 +1227,8 @@ export class Game {
       this.handleOpenHome();
       return;
     }
+    this.router.hide();
+    this.tournamentUi.show();
     this.state.screen = 'matchPreview';
     this.updateTouchControlsVisibility();
     this.tournamentUi.renderMatchPreview(this.tournament.getSnapshot());
@@ -631,6 +1239,8 @@ export class Game {
       this.handleOpenHome();
       return;
     }
+    this.router.hide();
+    this.tournamentUi.show();
     this.state.screen = 'bracket';
     this.updateTouchControlsVisibility();
     this.tournamentUi.renderBracket(this.tournament.getSnapshot());
@@ -694,7 +1304,7 @@ export class Game {
     this.state.lastMatchResult = undefined;
     this.state.screen = 'home';
     this.updateTouchControlsVisibility();
-    this.tournamentUi.renderHome(false);
+    this.showHomeScreen();
   };
 
   private readonly handleResetSettings = (): void => {
@@ -703,28 +1313,12 @@ export class Game {
     this.handleOpenSettings();
   };
 
-  private readonly handleOpenSquad = (): void => {
-    if (!this.tournament) {
-      this.handleOpenHome();
-      return;
-    }
-    this.state.screen = 'squad';
-    this.updateTouchControlsVisibility();
-    this.tournamentUi.renderSquad(this.tournament.selectedTeam, this.tournament.getSnapshot());
-  };
-
   private readonly handleOpenTactics = (): void => {
     if (!this.tournament) {
       this.handleOpenHome();
       return;
     }
-    this.state.screen = 'pickTactics';
-    this.updateTouchControlsVisibility();
-    this.tournamentUi.renderTactics(
-      this.tournament.selectedTeam,
-      this.tournament.getSnapshot(),
-      this.state.liveMatch?.userTactics,
-    );
+    this.routerShow('tactics', { tournament: this.tournament });
   };
 
   private readonly handleConfirmTactics = (tactics: UserTactics, lineupIds: string[]): void => {
@@ -737,34 +1331,20 @@ export class Game {
 
   private renderCurrentTournamentScreen(): void {
     if (!this.tournament) {
-      this.tournamentUi.renderHome(hasTournamentSave());
+      this.showHomeScreen();
       return;
     }
 
     const snapshot = this.tournament.getSnapshot();
     if (snapshot.championTeamId || this.state.screen === 'champion') {
       this.state.screen = 'champion';
+      this.router.hide();
+      this.tournamentUi.show();
       this.updateTouchControlsVisibility();
       this.tournamentUi.renderChampion(snapshot);
-    } else if (this.state.screen === 'bracket') {
-      this.updateTouchControlsVisibility();
-      this.tournamentUi.renderBracket(snapshot);
-    } else if (this.state.screen === 'matchPreview') {
-      this.updateTouchControlsVisibility();
-      this.tournamentUi.renderMatchPreview(snapshot);
-    } else if (this.state.screen === 'squad') {
-      this.updateTouchControlsVisibility();
-      this.tournamentUi.renderSquad(this.tournament.selectedTeam, snapshot);
-    } else if (this.state.screen === 'pickTactics') {
-      this.updateTouchControlsVisibility();
-      this.tournamentUi.renderTactics(
-        this.tournament.selectedTeam,
-        snapshot,
-        this.state.liveMatch?.userTactics,
-      );
     } else {
-      this.updateTouchControlsVisibility();
-      this.tournamentUi.renderGroupStage(snapshot);
+      // Default to the new Manager Hub for any non-champion fallback.
+      this.handleOpenManagerHub();
     }
   }
 

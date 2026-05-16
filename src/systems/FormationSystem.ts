@@ -47,6 +47,32 @@ const FORMATION_POINTS: Record<FormationName, Record<PlayerRole, FormationPoint>
     rightWing: { x: 0.16, progress: 0.47 },
     striker: { x: 0, progress: 0.49 },
   },
+  '4-2-3-1': {
+    goalkeeper: { x: 0, progress: 0.04 },
+    leftBack: { x: -0.34, progress: 0.22 },
+    centerBackLeft: { x: -0.12, progress: 0.18 },
+    centerBackRight: { x: 0.12, progress: 0.18 },
+    rightBack: { x: 0.34, progress: 0.22 },
+    defensiveMid: { x: -0.10, progress: 0.30 },
+    centralMid: { x: 0.10, progress: 0.30 },
+    attackingMid: { x: 0, progress: 0.42 },
+    leftWing: { x: -0.30, progress: 0.46 },
+    rightWing: { x: 0.30, progress: 0.46 },
+    striker: { x: 0, progress: 0.50 },
+  },
+  '5-3-2': {
+    goalkeeper: { x: 0, progress: 0.04 },
+    leftBack: { x: -0.38, progress: 0.20 },
+    centerBackLeft: { x: -0.16, progress: 0.16 },
+    centerBackRight: { x: 0, progress: 0.16 },
+    rightBack: { x: 0.38, progress: 0.20 },
+    defensiveMid: { x: 0.16, progress: 0.16 },
+    centralMid: { x: -0.16, progress: 0.36 },
+    attackingMid: { x: 0.16, progress: 0.36 },
+    leftWing: { x: 0, progress: 0.38 },
+    rightWing: { x: -0.10, progress: 0.48 },
+    striker: { x: 0.10, progress: 0.48 },
+  },
 };
 
 export function selectFormation(

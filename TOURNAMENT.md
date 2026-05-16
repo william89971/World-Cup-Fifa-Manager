@@ -1,6 +1,6 @@
-# World 5s Cup Format
+# Global Retro Cup Format
 
-World 5s Cup is an original 48-team international-style tournament format for Codex Futbol. It does not use official tournament names, logos, badges, kits, federation marks, player names, or real kit designs.
+Global Retro Cup is an original 48-team international-style tournament format. It does not use official tournament names, logos, badges, kits, federation marks, player names, or real kit designs.
 
 ## Teams
 
@@ -10,10 +10,12 @@ Each team has:
 - Short code
 - Original primary and secondary colors
 - Inline SVG national flag layout
-- Eleven fictional, nation-flavored player profiles with role, number, personality archetype, traits, top traits, and procedural style seeds
+- **Eighteen** fictional, nation-flavored player profiles (11 starters + 7 bench) with role, number, personality archetype, traits, top traits, procedural style seeds, and manager-mode condition / morale / form fields
 - Attack, defense, speed, stamina, and overall ratings
 - Team tactical style: possession, counterAttack, highPress, defensive, balanced, or directAttack
-- Formation preferences: 4-3-3, 4-4-2, and 3-5-2 in style-dependent order
+- Formation preferences: 4-3-3, 4-4-2, 4-2-3-1, 3-5-2, and 5-3-2 in style-dependent order
+
+Bench players are generated deterministically per team via `src/tournament/benchGen.ts` from a seed of the team id, so the same team always gets the same bench across runs.
 
 Real country names and national flag layouts are used as labels and simple inline SVG visuals. There are no official federation badges, official kits, player likenesses, tournament marks, or copyrighted logos.
 
@@ -38,6 +40,18 @@ Real country names and national flag layouts are used as labels and simple inlin
 - Quarter-finals
 - Semi-finals
 - Final
+
+## Manager save additions (schema v2)
+
+In addition to the tournament fixtures + standings, the save now stores:
+
+- `lineups[teamId]` — per-team starting XI / bench / captain ids
+- `tactics[teamId]` — manager tactics (formation, style, mentality, 8 sliders)
+- `news` — inbox feed (cap 80)
+- `trainingHistory` — recent training sessions (cap 32)
+- `matchHistory` — recent match reports with stats and player ratings (cap 32)
+
+See `SAVE_SYSTEM.md` for the full schema and migration rules.
 
 Knockout matches cannot end in draws. CPU knockout draws get a simple penalty-style text result. User knockout draws are resolved by the current match result mapping until a fuller extra-time/penalties mode is added.
 

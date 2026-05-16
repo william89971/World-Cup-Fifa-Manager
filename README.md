@@ -1,8 +1,8 @@
-# World Cup 2026 — Manager
+# Global Retro Cup — Manager
 
-A browser-based **11v11 football manager simulation**. You pick a country, set the formation and tactics, choose your starting XI from a squad of 23, then watch the match play itself in 3D with autonomous AI on both sides. Built with Vite, TypeScript, Three.js, and Rapier physics.
+A browser-based **football manager simulation**. You manage a national team through a 48-team retro tournament: set tactics, train your squad, scout opponents, then watch matches play out in 3D with autonomous AI on both sides. The user is the manager — there is no WASD player control in the manager flow. Built with Vite, TypeScript, Three.js, and Rapier physics.
 
-> Unofficial, original code and assets. Nothing in this project uses FIFA, World Cup, federation, club, or kit branding. Country names are plain text only; all flags are inline SVG primitives generated in code.
+> Unofficial, original code and assets. Nothing in this project uses FIFA, World Cup, Football Manager, EA Sports, Sports Interactive, or any federation / club / kit branding. Country names are plain text only; all flags are inline SVG primitives generated in code.
 
 ---
 
@@ -34,30 +34,46 @@ npm run validate:tournament
 
 | Feature | Status |
 |---|---|
-| **48-team World Cup tournament** with groups + best-third qualifiers + knockout bracket | Working |
+| **Main menu**: Tournament / Manager Mode / Training / Settings (4 buttons only) | Working |
+| **48-team tournament** with 12 groups + best-third qualifiers + knockout bracket | Working |
 | **11v11 AI vs AI matches**, fully autonomous (no direct player control) | Working |
 | **Country selection** with 48 nations, distinct kits, inline SVG flags | Working |
-| **Pre-match tactics screen** — formation chooser, six team styles, auto-pick best XI | Working |
-| **Squad screen** — all 23 players with 13 trait bars, talents, and weaknesses | Working |
-| **Broadcast camera** that follows the ball from above-and-behind one byline | Working |
-| **Trait-driven per-player AI** (own brain, own reaction time, own decision cadence) | Working |
-| **Match simulation** for fixtures you don't want to watch live | Working |
-| **Save/load tournament** state in `localStorage` | Working |
-| **Mobile-installable PWA**, touch-control infrastructure (currently dormant in manager mode) | Working |
-| In-match tactical changes, substitutions, replays, match-speed slider | Planned (Phase C) |
+| **Manager Hub** — dashboard with next match, squad condition, news, quick actions | Working |
+| **Squad** screen — tabs (All / XI / Bench), sort, filter, captain | Working |
+| **Player Profile** — 13-trait radar + bars, recent-rating sparkline, notes | Working |
+| **Tactics** — 5 formations, 6 styles, 5-step mentality, 8 sliders, live summary | Working |
+| **Formation Pitch view** — SVG top-down pitch, click-to-swap, bench drawer | Working |
+| **Lineup** — XI + bench + captain + opponent expected XI | Working |
+| **Match Preview** — team comparison bars, key players, fatigue warnings, recommendation | Working |
+| **Scouting / Opponent Report** — danger players, weak spots, suggested tactics | Working |
+| **Training** — 7 focus types × 3 intensities, history, news on milestones | Working |
+| **Inbox / News** — match summaries, training milestones, scout reports | Working |
+| **In-match management** — pause, 1×/2×/4× speed, tactic changes, subs, halftime team-talk | Working |
+| **Enriched match viewer** — stat rail, commentary feed, controls overlay on the 3D pitch | Working |
+| **Post-Match Report** — comparison bars, MotM, scorers, ratings table | Working |
+| **18-player squads** (11 starters + 7 bench), substitutions up to 5 per match | Working |
+| **Fatigue / morale / form** persistence across matches | Working |
+| **Save/load** with versioned schema, autosave badge | Working |
+| **Mobile-installable PWA**, touch-friendly buttons, responsive layout | Working |
 
 ---
 
 ## Manager-mode flow
 
-1. **Home** → New Tournament (or Continue if a save exists).
-2. **Country Selection** — 48 nations, sorted by ranking. Click any to claim them as your team.
-3. **Group Stage** — your group's standings and the next playable fixture.
-4. **Match Preview** — opponent profile, team ratings, plus two manager buttons:
-   - **View Squad** — every player on a card showing 13 trait bars (red < 0.5, amber 0.5–0.74, green ≥ 0.75), the top 3 *talents*, and bottom *weaknesses*.
-   - **Set Tactics & Lineup** — pick a formation (4-3-3 / 4-4-2 / 3-5-2), pick a team style (with descriptions of what each does to trait weighting), see the auto-picked best XI, then confirm.
-5. **Live Match** — broadcast camera, clean HUD (scoreboard + clock + possession + event feed). The match plays itself. `P` pauses, `T` restarts the kickoff, `F3` toggles a debug overlay.
-6. **Match Complete** — score, then back to group stage / bracket / next fixture.
+1. **Home** — four buttons: Tournament / Manager Mode / Training / Settings.
+2. **Country Selection** — 48 nations. Pick one and land in the Manager Hub.
+3. **Manager Hub** — your dashboard. Next-match card, squad summary, news, 9-tile quick actions.
+4. From the hub: **Squad** (open Player Profile), **Tactics** (formation + 8 sliders + mentality), **Lineup** (XI + bench + captain), **Pitch view** (SVG swap), **Training**, **Scouting**, **Fixtures / Standings / Bracket**, **Inbox**, **Settings**.
+5. **Continue** → Lineup → **Match Preview** → **Watch Match** (or Simulate).
+6. **Watch Match** — 3D pitch + DOM overlay. Pause with Space, switch speed with `1` / `2` / `4`. Click TACTICS or SUBS to slide in the in-match panel (apply tactics, swap players, view full stats).
+7. At halftime — pick a team-talk option (encourage / calm / press).
+8. Full time — **Post-Match Report**: comparison bars, scorers, ratings, MotM, condition/morale updates. Continue → Manager Hub for the next match.
+
+Keyboard:
+- `Space` — pause / resume the match
+- `1` / `2` / `4` — match speed
+- `Esc` — close the in-match panel
+- `F3` — debug overlay
 7. **Champion screen** when the bracket resolves.
 
 ---
